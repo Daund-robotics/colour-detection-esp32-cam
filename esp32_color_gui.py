@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, font
 from PIL import Image, ImageTk
 import threading
 import requests
@@ -9,55 +9,82 @@ import requests
 # ============ CONFIGURATION ============
 URL = 'http://10.143.133.117/stream' # ESP32-CAM Stream URL
 
-class ColorDetectionApp:
+# Disease Mapping: (Lower HSV, Upper HSV, BGR Display Color, Disease Name)
+DISEASE_MAP = [
+    ([0, 0, 0], [30, 255, 80], (20, 54, 101), "Leaf Spot (Brown/Black)"),
+    ([0, 0, 180], [180, 50, 255], (255, 255, 255), "Powdery Mildew (White)"),
+    ([10, 150, 100], [25, 255, 255], (0, 165, 255), "Rust (Orange/Yellow)"),
+    ([20, 100, 50], [35, 255, 150], (0, 200, 255), "Bacterial Blight (Yellow)"),
+    ([15, 50, 50], [25, 150, 200], (50, 100, 150), "Leaf Streak (Yellow/Brown)"),
+    ([30, 100, 100], [45, 255, 255], (0, 255, 200), "Mosaic Disease (Yellow-Green)"),
+    ([40, 50, 100], [70, 150, 255], (144, 238, 144), "Leaf Curl (Light Green)"),
+    ([22, 100, 150], [32, 255, 255], (0, 255, 255), "Nitrogen Deficiency (Yellow)"),
+    ([25, 50, 150], [35, 100, 255], (150, 255, 255), "Iron Deficiency (Yellow-Green Veins)")
+]
+
+class PlantDiseaseApp:
     def __init__(self, window):
         self.window = window
-        self.window.title("Tronix - ESP32 Color Vision Pro")
-        self.window.geometry("1100x700")
-        self.window.configure(bg="#1e1e1e") # Dark theme
+        self.window.title("Plant Disease Monitoring System")
+        self.window.geometry("1200x800")
+        self.window.configure(bg="#0f172a") # Deep Slate Blue
 
         # State variables
         self.running = False
-        self.roi_size = 220
+        self.roi_size = 250
         self.cap = None
+
+        # Custom Fonts
+        self.title_font = font.Font(family="Segoe UI", size=18, weight="bold")
+        self.label_font = font.Font(family="Segoe UI", size=10)
+        self.status_font = font.Font(family="Segoe UI", size=14, weight="bold")
 
         # --- UI Layout ---
         # Sidebar
-        self.sidebar = tk.Frame(window, width=250, bg="#2d2d2d", padx=20, pady=20)
+        self.sidebar = tk.Frame(window, width=300, bg="#1e293b", padx=25, pady=30)
         self.sidebar.pack(side="left", fill="y")
 
-        self.title_label = tk.Label(self.sidebar, text="COLOR VISION", font=("Helvetica", 18, "bold"), fg="#00ffcc", bg="#2d2d2d")
-        self.title_label.pack(pady=(0, 30))
+        self.title_label = tk.Label(self.sidebar, text="PLANT MONITOR", font=self.title_font, fg="#10b981", bg="#1e293b")
+        self.title_label.pack(pady=(0, 40))
 
-        # Buttons
-        self.btn_start = tk.Button(self.sidebar, text="START STREAM", command=self.toggle_stream, 
-                                  bg="#00ffcc", fg="black", font=("Helvetica", 10, "bold"), 
-                                  activebackground="#00cca3", relief="flat", height=2, width=20)
+        # Action Button
+        self.btn_start = tk.Button(self.sidebar, text="START MONITORING", command=self.toggle_stream, 
+                                  bg="#10b981", fg="white", font=("Segoe UI", 10, "bold"), 
+                                  activebackground="#059669", activeforeground="white",
+                                  relief="flat", height=2, width=22, cursor="hand2")
         self.btn_start.pack(pady=10)
 
-        # Controls
-        tk.Label(self.sidebar, text="Detection Range", bg="#2d2d2d", fg="white", font=("Helvetica", 9)).pack(pady=(20, 5))
-        self.slider_roi = tk.Scale(self.sidebar, from_=100, to=400, orient="horizontal", 
-                                  bg="#2d2d2d", fg="white", highlightthickness=0, command=self.update_roi)
+        # Control Panel
+        tk.Label(self.sidebar, text="Detection Sensitivity (ROI)", bg="#1e293b", fg="#94a3b8", font=self.label_font).pack(pady=(30, 5))
+        self.slider_roi = tk.Scale(self.sidebar, from_=100, to=500, orient="horizontal", 
+                                  bg="#1e293b", fg="white", highlightthickness=0, 
+                                  troughcolor="#334155", activebackground="#10b981",
+                                  command=self.update_roi)
         self.slider_roi.set(self.roi_size)
         self.slider_roi.pack(fill="x", pady=10)
 
-        # Status Panel
-        self.status_frame = tk.Frame(self.sidebar, bg="#3d3d3d", pady=15, padx=10)
-        self.status_frame.pack(fill="x", pady=20)
+        # Diagnosis Card
+        self.diag_frame = tk.Frame(self.sidebar, bg="#334155", pady=20, padx=15, highlightthickness=1, highlightbackground="#475569")
+        self.diag_frame.pack(fill="x", pady=(40, 0))
         
-        self.lbl_status = tk.Label(self.status_frame, text="Status: Offline", fg="#ff4444", bg="#3d3d3d", font=("Helvetica", 10))
-        self.lbl_status.pack()
+        tk.Label(self.diag_frame, text="DIAGNOSIS RESULT", bg="#334155", fg="#cbd5e1", font=("Segoe UI", 9, "bold")).pack()
         
-        self.lbl_detected = tk.Label(self.status_frame, text="Detected: None", fg="#ffffff", bg="#3d3d3d", font=("Helvetica", 12, "bold"))
-        self.lbl_detected.pack(pady=(10, 0))
+        self.lbl_status = tk.Label(self.diag_frame, text="System Offline", fg="#ef4444", bg="#334155", font=("Segoe UI", 10))
+        self.lbl_status.pack(pady=(5, 10))
+        
+        self.lbl_disease = tk.Label(self.diag_frame, text="Healthy / None", fg="#10b981", bg="#334155", 
+                                    font=self.status_font, wraplength=220, justify="center")
+        self.lbl_disease.pack(pady=(10, 0))
 
         # Main Viewport
-        self.main_view = tk.Frame(window, bg="#1e1e1e")
+        self.main_view = tk.Frame(window, bg="#0f172a")
         self.main_view.pack(side="right", fill="both", expand=True)
 
-        self.canvas = tk.Canvas(self.main_view, width=800, height=600, bg="#000000", highlightthickness=0)
-        self.canvas.pack(pady=20)
+        self.canvas_title = tk.Label(self.main_view, text="Live Plant Analysis Feed", bg="#0f172a", fg="#94a3b8", font=("Segoe UI", 10, "italic"))
+        self.canvas_title.pack(pady=(20, 0))
+
+        self.canvas = tk.Canvas(self.main_view, width=800, height=600, bg="#000000", highlightthickness=2, highlightbackground="#1e293b")
+        self.canvas.pack(pady=20, padx=20)
 
         # Start detection loop
         self.update_frame()
@@ -72,29 +99,28 @@ class ColorDetectionApp:
             self.stop_stream()
 
     def start_stream(self):
-        self.lbl_status.config(text="Status: Connecting...", fg="#ffff00")
+        self.lbl_status.config(text="Connecting...", fg="#eab308")
         self.window.update()
         
         try:
-            # OpenCV handles MJPEG streams via URL
             self.cap = cv2.VideoCapture(URL)
             if not self.cap.isOpened():
-                raise Exception("Could not open stream. Check IP.")
+                raise Exception("Could not connect to camera. Check IP address.")
             
             self.running = True
-            self.btn_start.config(text="STOP STREAM", bg="#ff4444")
-            self.lbl_status.config(text="Status: Live", fg="#00ffcc")
+            self.btn_start.config(text="STOP MONITORING", bg="#ef4444", activebackground="#dc2626")
+            self.lbl_status.config(text="Monitoring Live", fg="#10b981")
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to connect to ESP32-CAM:\n{e}")
-            self.lbl_status.config(text="Status: Error", fg="#ff4444")
+            messagebox.showerror("Connection Error", f"{e}")
+            self.lbl_status.config(text="System Error", fg="#ef4444")
 
     def stop_stream(self):
         self.running = False
         if self.cap:
             self.cap.release()
-        self.btn_start.config(text="START STREAM", bg="#00ffcc")
-        self.lbl_status.config(text="Status: Offline", fg="#ff4444")
-        self.lbl_detected.config(text="Detected: None")
+        self.btn_start.config(text="START MONITORING", bg="#10b981", activebackground="#059669")
+        self.lbl_status.config(text="System Offline", fg="#ef4444")
+        self.lbl_disease.config(text="Healthy / None", fg="#10b981")
         self.canvas.delete("all")
 
     def update_frame(self):
@@ -102,27 +128,25 @@ class ColorDetectionApp:
             ret, frame = self.cap.read()
             if ret:
                 # Process the frame
-                processed_frame, detected_color = self.process_image(frame)
+                processed_frame, detected_disease = self.process_image(frame)
                 
-                # Update UI elements
-                if detected_color:
-                    self.lbl_detected.config(text=f"Detected: {detected_color}")
+                # Update UI
+                if detected_disease:
+                    self.lbl_disease.config(text=detected_disease, fg="#fbbf24") # Warning color
                 else:
-                    self.lbl_detected.config(text="Detected: None")
+                    self.lbl_disease.config(text="Healthy / None", fg="#10b981")
 
                 # Convert to PIL format
                 cv2image = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
                 img = Image.fromarray(cv2image)
-                # Scale to fit canvas if needed
                 img = img.resize((800, 600), Image.Resampling.LANCZOS)
                 imgtk = ImageTk.PhotoImage(image=img)
                 self.canvas.imgtk = imgtk
                 self.canvas.create_image(0, 0, anchor="nw", image=imgtk)
             else:
                 self.stop_stream()
-                messagebox.showwarning("Connection Lost", "The stream has disconnected.")
+                messagebox.showwarning("Connection Lost", "Camera stream was interrupted.")
 
-        # Schedule next update
         self.window.after(10, self.update_frame)
 
     def process_image(self, frame):
@@ -133,60 +157,49 @@ class ColorDetectionApp:
         r = self.roi_size // 2
         x1, y1, x2, y2 = cx - r, cy - r, cx + r, cy + r
         
-        # Draw ROI Box
+        # Draw Scan Zone
         cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 255, 255), 1)
-        cv2.putText(frame, "Scan Zone", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        cv2.putText(frame, "DISEASE SCAN ZONE", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        final_disease = None
         
-        colors = {
-            "Red": ([0, 120, 70], [10, 255, 255]),
-            "Green": ([35, 100, 40], [85, 255, 255]),
-            "Blue": ([90, 80, 2], [130, 255, 255]),
-            "Yellow": ([20, 100, 100], [35, 255, 255]),
-        }
-        
-        # Extra range for red
-        red_mask_extra = cv2.inRange(hsv, np.array([170, 120, 70]), np.array([180, 255, 255]))
-
-        final_detected = None
-        
-        for name, (lower, upper) in colors.items():
+        # Iterate through mapped diseases
+        for lower, upper, d_color, d_name in DISEASE_MAP:
             mask = cv2.inRange(hsv, np.array(lower), np.array(upper))
-            if name == "Red":
-                mask = cv2.bitwise_or(mask, red_mask_extra)
-            
             mask = cv2.dilate(mask, np.ones((5,5), np.uint8))
             contours, _ = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
             
             for cnt in contours:
-                if cv2.contourArea(cnt) > 1500:
+                if cv2.contourArea(cnt) > 1200: # Sensitivity threshold
                     bx, by, bw, bh = cv2.boundingRect(cnt)
                     ob_cx, ob_cy = bx + bw//2, by + bh//2
                     
-                    # Check if center is in ROI
+                    # Detection logic: must be within Scan Zone
                     if x1 < ob_cx < x2 and y1 < ob_cy < y2:
-                        final_detected = name
-                        # BGR Colors for drawing
-                        draw_color = (0, 0, 0)
-                        if name == "Red": draw_color = (0, 0, 255)
-                        elif name == "Green": draw_color = (0, 255, 0)
-                        elif name == "Blue": draw_color = (255, 0, 0)
-                        elif name == "Yellow": draw_color = (0, 255, 255)
-                        
-                        cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), draw_color, 3)
-                        cv2.putText(frame, name, (bx, by - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.8, draw_color, 2)
+                        final_disease = d_name
+                        cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), d_color, 2)
+                        cv2.putText(frame, d_name.split('(')[0], (bx, by - 10), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, d_color, 2)
+                        break # Stop at first significant detection
+            if final_disease: break
 
-        # Center crosshair color info
+        # Center Crosshair with HSV data
         pixel_center = hsv[cy, cx]
-        cv2.circle(frame, (cx, cy), 5, (255, 255, 255), -1)
-        cv2.putText(frame, f"H:{pixel_center[0]} S:{pixel_center[1]} V:{pixel_center[2]}", 
-                    (cx + 15, cy + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        cv2.drawMarker(frame, (cx, cy), (0, 255, 0), cv2.MARKER_CROSS, 20, 2)
+        cv2.putText(frame, f"HSV: {pixel_center}", (cx + 15, cy + 15), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
 
-        return frame, final_detected
+        return frame, final_disease
 
 # Start Application
 if __name__ == "__main__":
     root = tk.Tk()
-    app = ColorDetectionApp(root)
+    # Apply a modern theme look if possible
+    try:
+        root.tk.call('tk_setPalette', '#0f172a')
+    except:
+        pass
+    app = PlantDiseaseApp(root)
     root.mainloop()
+
